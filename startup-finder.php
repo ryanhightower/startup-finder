@@ -26,6 +26,7 @@ Map:
 	- collect all companies from query
 	- request additional data from CrunchBase on each company
 	- sift companies to match 1yr old and less than 500 employees
+	- SORT companies by fastest growth (number of employees / yrs in business)
 5. Display Data 
 	- Using shortcode to display table for now.
 	- Feature Request: This data should be cached somewhere so it doesn't have to be processed every time.
@@ -39,8 +40,10 @@ function get_companies($page = false){
 		// 1. Build the query
 		// Create CrunchBase URL with the tag.
 		// Hardcoded for now. In future iteration, these should be editable either via an options page or a shortcode.
+		// http://api.crunchbase.com/v/1/search.js?geo=94301&entity=company&api_key=c7du3hcrfnz7jgs5xecbt6cg
 		
-		$query_args = "geo=94301&range=10&entity=company";
+		$query_args = "geo=94301&entity=company"; // took out &range=10 to speed up query for development
+		$api_key = "&api_key=c7du3hcrfnz7jgs5xecbt6cg"; 
 		
 		$request = "http://api.crunchbase.com/v/1/search.js?" . $query_args;
 		
@@ -49,7 +52,7 @@ function get_companies($page = false){
 		if($page) $request .= "&page=".$page;
 
 		// Authorize the api call.
-		$request .= "&api_key=c7du3hcrfnz7jgs5xecbt6cg"; 
+		$request .= $api_key; 
 
 		// 2. Send request
 		$handle = @fopen($request, "rb");
@@ -66,11 +69,11 @@ function startup_finder(){
 		
 		// In the actual program, this should be looped multiple times to get all paginated results,
 		// or include pagination on the page so the user can see more results if desired.
+		echo "getting companies...<br />";	
 		$jsonText = get_companies();
 		// var_dump($jsonText);
 		
-
-		if (!$jsonText) return; // var_dump($request); // Something went wrong, and we should do nothing and exit
+		if (!$jsonText) return var_dump($request); // Something went wrong, and we should do nothing and exit
 
 		// 4. Parse data
 		// Per client requirements, data from CrunchBase query will need to pass through a second loop to 
@@ -97,27 +100,51 @@ function startup_finder(){
 			
 			$jsonCompany = json_decode($jsonCompanyText);
 			
-			// Verify company is less than 500 employees and more than 1yr old.
+			// Verify company is less than 500 employees.
 			if($jsonCompany->{"number_of_employees"} <= 500 && ($jsonCompany->{"number_of_employees"} != NULL || $jsonCompany->{"number_of_employees"} != '')){
-				$founded_date = $jsonCompany->{"founded_month"}.'/'.$jsonCompany->{"founded_day"}.'/'.$jsonCompany->{"founded_year"};
-				if(strtotime("-365 days")>strtotime($founded_date)){
+
+				// Verify company is more than 1yr old.
+				($jsonCompany->{"founded_month"}!='') ? $founded_date_month = $jsonCompany->{"founded_month"} : $founded_date_month = 1; // If no month is set, assume the company was started at the beginning of the year (1st month).
+				($jsonCompany->{"founded_day"}!='') ? $founded_date_day = $jsonCompany->{"founded_day"} : $founded_date_day = 1; // If no day is set, assume the company was started at the beginning of the month (1st day).
+				$founded_date_year = $jsonCompany->{"founded_year"};
+
+				$founded_date = new DateTime();
+				$founded_date->setDate($founded_date_year, $founded_date_month, $founded_date_day);
+
+				$cutoff_date = new DateTime("-1 year");
+
+//				echo $jsonCompany->{"name"}."<br />";
+//				echo "founded = ".$founded_date->format("m-d-Y")."<br />";
+				
+				if($cutoff_date > $founded_date){
+
+					// Calculate the Growth Rate (# of employees/year) to sort by later.
+					$today = new DateTime();
+					$jsonCompany->{"age"} = $today->diff($founded_date)->days/365; // Get the company age in years.
+					
+					$jsonCompany->{"growth_rate"} = $jsonCompany->{"number_of_employees"}/($jsonCompany->{"age"});
 					$jsonCompanyArr[] = $jsonCompany;
 				}
 			}
 			
+			// Sort companies by Growth Rate (# of Employees / Years in Operation).
+			usort($jsonCompanyArr, function($a, $b) {
+			    return ($a->{'growth_rate'} > $b->{'growth_rate'}) ? -1 : 1; 
+			});	
 		}
-//		var_dump($jsonCompanies);
 		
 		
 		// 5. Display Data
 		// Build and return a simple table. 
 		
-//		echo "building table...";
+		echo "building table...";
 		foreach($jsonCompanyArr as $jsonCompany){
 			$companyName = $jsonCompany->{"name"};
 			$companyDescription = $jsonCompany->{"overview"};
 			$homePageUrl = $jsonCompany->{"homepage_url"};
 			$number_of_employees = $jsonCompany->{"number_of_employees"};
+			$companyAge = $jsonCompany->{"age"};
+			$growthRate = $jsonCompany->{"growth_rate"};
 
 			$founded_date = '';
 			if($jsonCompany->{"founded_month"}!='') $founded_date .= $jsonCompany->{"founded_month"}.'/';
@@ -128,13 +155,16 @@ function startup_finder(){
 				$data .= "<td><b><a rel='nofollow' href='" . $homePageUrl . "'>" . $companyName . "</a></b></td>";
 				$data .= "<td>" . $number_of_employees . "</td>";
 				$data .= "<td>" . $founded_date . "</td>";
-				$data .= "<td>" . $companyDescription . "</td>";
+				$data .= "<td>" . $companyAge . "</td>";
+				$data .= "<td>" . $growthRate . " emps/yr</td>";
+//				$data .= "<td>" . $companyDescription . "</td>"; // removed for demonstration purposes. Use after styling is complete.
+
 			$data .= "</tr>";			
 		}
 		
 		$table .= "<div>";
 			$table .= "	<table width='90%' border='1' cellspacing='0' cellpadding='3'>";
-				$table .= "<tr><th>Company Name</th><th># of Employees</th><th>Date Founded</th><th>Company Description</th></tr>";
+				$table .= "<tr><th>Company Name</th><th># of Employees</th><th>Date Founded</th><th>Years in Operation</th><th>Growth Rate</th></tr>";
 				$table .= $data;
 			$table .= "	</table>";
 		$table .= "</div>";
@@ -143,6 +173,12 @@ function startup_finder(){
 		return $table; // will be displayed via shortcode function.
 }
 
+/*
+function sortByGrowth($a, $b){
+	// Sorts the company array by Growth Rate (# of Employees / Years in Operation).
+	$a->{""};
+}
+*/
 
 
 add_shortcode( 'startup-finder', 'startup_finder' );
